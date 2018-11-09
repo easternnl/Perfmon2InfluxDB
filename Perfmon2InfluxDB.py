@@ -4,11 +4,12 @@ import csv
 import re
 import time
 import datetime
+import argparse
+import os
+import sys
 from pytz import timezone
 from influxdb import InfluxDBClient
 from datetime import timedelta
-
-
 
 ##
 ## Check if data type of field is float
@@ -33,19 +34,64 @@ def isinteger(value):
             return False
 
 
+# parse the arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('--batchsize', default=20000, help='How many inserts into InfluxDb in one chunk')
+parser.add_argument('--filename', help='Perfmon filename to process - can be blg or csv', required=True)
+parser.add_argument('--dbhost', default="localhost", help='InfluxDb hostname or ip')
+parser.add_argument('--dbport', default="8086", help='InfluxDb port number')
+parser.add_argument('--dbname', default="influxdb", help='InfluxDb database name')
+parser.add_argument('--dbdrop', default=0, help='Drop database if exist to ensure a clean database')
+parser.add_argument('--json', default=0, help='Use JSON inserts instead of line protocol')
+parser.add_argument('--verbose', default=0, help='Display all parameters used in the script')
+
+args = parser.parse_args()
+
+if (args.verbose):    
+    print("Filename=%s" %(args.filename))
+    print("Batchsize=%d" %(args.batchsize))
+    print("Dbhost=%s" %(args.dbhost))
+    print("Dbport=%s" %(args.dbport))
+    print("Dbname=%s" %(args.dbname))
+    print("Dbdrop=%d" %(args.dbdrop))
+    print("JSON=%d" %(args.json))
+
+# check file format
+filename, extension = os.path.splitext(args.filename)
+
+print("Extension=%s" %(extension))
+if (extension == ".blg"):
+    # convert to csv/perfmon file
+    print( "Converting %s to %s.perfmon" %(args.filename, filename))
+    command = "relog %s -y -f csv -o %s.perfmon" %(args.filename, filename)
+
+    print(command)
+    return_code = os.system(command)
+
+    if (return_code):
+        print ("Error when running %s" % (command))
+
+        sys.exit()
+
+    args.filename = "%s.perfmon" % (filename)
+
+
+
 # 
-batchsize = 20000
 datapoints = []
 
+
 # connect to influx
-client = InfluxDBClient(host='grafana', port=8086)
-client.drop_database('pyexample')
-client.create_database('pyexample')
-client.switch_database('pyexample')
+client = InfluxDBClient(host=args.dbhost, port=args.dbport)
+if (args.dbdrop):
+    client.drop_database(args.dbname)
+
+client.create_database(args.dbname)
+client.switch_database(args.dbname)
 
 # open file and read content in to csv table
 #file = open('APPSRV-SENSIGHT_2016-12-24_13-41-35.perfmon', 'r')
-file = open('C:\\Tools\\performancecounters\\ERIK-P50_2018-11-02_12-23-42.perfmon','r')
+file = open('ERIK-P50_2018-11-02_15-53-00.perfmon','r')
 reader = csv.reader(file)
 # set headers from the first row
 headers = next(reader, None)
@@ -118,37 +164,45 @@ for column in columns:
             #print (value)
             # build the json object
             if (isfloat(value) or isinteger(value)):
-                datapoint =             {
-                            "measurement": measurement,
-                            "tags": {
-                                "host": host,
-                                "instance": instance,
-                                "objectname" : objectname
-                            },
-                            "time":  timestamp,
-                            "fields": {
-                                field: float(value  )
+                if (args.json):
+
+                    datapoint =             {
+                                "measurement": measurement,
+                                "tags": {
+                                    "host": host,
+                                    "instance": instance,
+                                    "objectname" : objectname
+                                },
+                                "time":  timestamp,
+                                "fields": {
+                                    field: float(value  )
+                                }
                             }
-                        }
-                #print(value)
-                #print (datapoint)
-                datapoints.append(datapoint)
+                    #print(value)
+                    #print (datapoint)
+                    datapoints.append(datapoint)
 
-                #client.write_points(json_body)
+                    #client.write_points(json_body)
 
-                if len(datapoints) % batchsize == 0:
-                    #print('Read %d lines'%count)
-                    print('Inserting %d datapoints...'%(len(datapoints)))
-                    response = client.write_points(datapoints)
+                    if len(datapoints) % args.batchsize == 0:
+                        #print('Read %d lines'%count)
+                        print('Inserting %d datapoints...'%(len(datapoints)))
+                        response = client.write_points(datapoints)
 
-                    if response == False:
-                        print('Problem inserting points, exiting...')
-                        exit(1)
+                        if response == False:
+                            print('Problem inserting points, exiting...')
+                            exit(1)
 
-                    print("Wrote %d, response: %s" % (len(datapoints), response))
+                        print("Wrote %d, response: %s" % (len(datapoints), response))
 
 
-                    datapoints = []            
+                        datapoints = []            
+                else:
+                    datapoint = "%s host=%s, instance=%s, objectname=%s %s=%d %d" %(measurement, host, instance, objectname, field, float(value), timestamp )
+                    #client.write(datapoint)
+                    #datapoints.append(datapoint)
+
+                    print(datapoint)
     else:
         # this it the time column, convert the timestamps from 12/24/2016 14:57:13.810 to 2018-03-28T8:01:00Z"
         print ("Asuming %s is the time column" % (column))
@@ -164,10 +218,17 @@ for column in columns:
         print ("Correction: %d" %(correction))
         print ("Timezone: %s" %(timezone))        
 
-        columns[column] = [
-            (datetime.datetime.strptime(timestamp,"%m/%d/%Y %H:%M:%S.%f") + timedelta(minutes=correction)).strftime("%Y-%m-%dT%H:%M:%SZ")
-             for timestamp in columns[column]
-            ]
+        if (args.json):
+            columns[column] = [
+                (datetime.datetime.strptime(timestamp,"%m/%d/%Y %H:%M:%S.%f") + timedelta(minutes=correction)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for timestamp in columns[column]
+                ]
+        else:
+            columns[column] = [
+                (datetime.datetime.strptime(timestamp,"%m/%d/%Y %H:%M:%S.%f") + timedelta(minutes=correction)).timestamp()
+                for timestamp in columns[column]
+                ]
+
 
         #print ("after")
 

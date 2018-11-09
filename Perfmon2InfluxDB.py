@@ -91,7 +91,7 @@ client.switch_database(args.dbname)
 
 # open file and read content in to csv table
 #file = open('APPSRV-SENSIGHT_2016-12-24_13-41-35.perfmon', 'r')
-file = open('ERIK-P50_2018-11-02_15-53-00.perfmon','r')
+file = open(args.filename,'r')
 reader = csv.reader(file)
 # set headers from the first row
 headers = next(reader, None)

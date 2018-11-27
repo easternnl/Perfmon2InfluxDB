@@ -80,18 +80,21 @@ if (extension == ".blg"):
 # 
 datapoints = []
 
-http_proxy  = "http://127.0.0.1:8888"
-https_proxy = "http://127.0.0.1:8888"
-ftp_proxy   = "http://127.0.0.1:8888"
+# use proxy with the following configuration:
+#
+# http_proxy  = "http://127.0.0.1:8888"
+# https_proxy = "http://127.0.0.1:8888"
+# ftp_proxy   = "http://127.0.0.1:8888"
 
-proxyDict = { 
-              "http"  : http_proxy, 
-              "https" : https_proxy, 
-              "ftp"   : ftp_proxy
-            }
+# proxyDict = { 
+#               "http"  : http_proxy, 
+#               "https" : https_proxy, 
+#               "ftp"   : ftp_proxy
+#             }
+
 
 # connect to influx
-client = InfluxDBClient(host=args.dbhost, port=args.dbport,proxies=proxyDict)
+client = InfluxDBClient(host=args.dbhost, port=args.dbport)
 if (args.dbdrop):
     client.drop_database(args.dbname)
 

@@ -36,14 +36,14 @@ def isinteger(value):
 
 # parse the arguments
 parser = argparse.ArgumentParser()
-parser.add_argument('--batchsize', default=20000, help='How many inserts into InfluxDb in one chunk')
+parser.add_argument('--batchsize', default=100000, type=int, help='How many inserts into InfluxDb in one chunk')
 parser.add_argument('--filename', help='Perfmon filename to process - can be blg or csv', required=True)
 parser.add_argument('--dbhost', default="localhost", help='InfluxDb hostname or ip')
 parser.add_argument('--dbport', default="8086", help='InfluxDb port number')
 parser.add_argument('--dbname', default="influxdb", help='InfluxDb database name')
-parser.add_argument('--dbdrop', default=0, help='Drop database if exist to ensure a clean database')
-parser.add_argument('--json', default=0, help='Use JSON inserts instead of line protocol')
-parser.add_argument('--verbose', default=0, help='Display all parameters used in the script')
+parser.add_argument('--dbdrop', type=int, default=0, help='Drop database if exist to ensure a clean database')
+parser.add_argument('--json', type=int, default=0, help='Use JSON inserts instead of line protocol')
+parser.add_argument('--verbose', type=int, default=0, help='Display all parameters used in the script')
 
 args = parser.parse_args()
 
@@ -54,7 +54,7 @@ if (args.verbose):
     print("Dbport=%s" %(args.dbport))
     print("Dbname=%s" %(args.dbname))
     print("Dbdrop=%d" %(args.dbdrop))
-    print("JSON=%d" %(args.json))
+    print("Json=%s" %(args.json))
 
 # check file format
 filename, extension = os.path.splitext(args.filename)
@@ -80,9 +80,18 @@ if (extension == ".blg"):
 # 
 datapoints = []
 
+http_proxy  = "http://127.0.0.1:8888"
+https_proxy = "http://127.0.0.1:8888"
+ftp_proxy   = "http://127.0.0.1:8888"
+
+proxyDict = { 
+              "http"  : http_proxy, 
+              "https" : https_proxy, 
+              "ftp"   : ftp_proxy
+            }
 
 # connect to influx
-client = InfluxDBClient(host=args.dbhost, port=args.dbport)
+client = InfluxDBClient(host=args.dbhost, port=args.dbport,proxies=proxyDict)
 if (args.dbdrop):
     client.drop_database(args.dbname)
 
@@ -90,7 +99,6 @@ client.create_database(args.dbname)
 client.switch_database(args.dbname)
 
 # open file and read content in to csv table
-#file = open('APPSRV-SENSIGHT_2016-12-24_13-41-35.perfmon', 'r')
 file = open(args.filename,'r')
 reader = csv.reader(file)
 # set headers from the first row
@@ -106,9 +114,6 @@ for row in reader:
     for h, v in zip(headers, row):
        columns[h].append(v) 
 # dataset is now complete
-
-
-
 
 # walk through the dataset, column by column
 for column in columns:    
@@ -139,9 +144,17 @@ for column in columns:
         measurement = measurement.replace("Processor","win_cpu")
         measurement = measurement.replace("System","win_system")
         measurement = measurement.replace("Process","win_proc")
+        measurement = measurement.replace("%","Percent")
+        measurement = measurement.replace("/","_")
+        measurement = measurement.replace(" ","_")
+        measurement = measurement.replace("_sec","_persec")
         
 
         objectname = (match.group(2))
+        objectname = objectname.replace("%","Percent")
+        objectname = objectname.replace("/","_")
+        objectname = objectname.replace(" ","_")
+        objectname = objectname.replace("_sec","_persec")
         
         instance = (match.group(3))
         if not instance:
@@ -187,7 +200,7 @@ for column in columns:
                     if len(datapoints) % args.batchsize == 0:
                         #print('Read %d lines'%count)
                         print('Inserting %d datapoints...'%(len(datapoints)))
-                        response = client.write_points(datapoints)
+                        response = client.write_points(datapoints,  protocol ="line")
 
                         if response == False:
                             print('Problem inserting points, exiting...')
@@ -198,11 +211,28 @@ for column in columns:
 
                         datapoints = []            
                 else:
-                    datapoint = "%s host=%s, instance=%s, objectname=%s %s=%d %d" %(measurement, host, instance, objectname, field, float(value), timestamp )
-                    #client.write(datapoint)
-                    #datapoints.append(datapoint)
+                    if instance:
+                        datapoint = "%s,host=%s,instance=%s,objectname=%s %s=%d %d\n" %(measurement, host, instance, objectname, field, float(value), timestamp )
+                    else:
+                        datapoint = "%s,host=%s,objectname=%s %s=%d %d\n" %(measurement, host, objectname, field, float(value), timestamp )
+                    datapoints.append(datapoint)
 
-                    print(datapoint)
+                    #print(datapoint)
+
+                    if len(datapoints) % args.batchsize == 0:
+                        #print('Read %d lines'%count)
+                        print('Inserting %d datapoints...'%(len(datapoints)))
+                        response = client.write_points(datapoints,  protocol ="line")
+
+                        if response == False:
+                            print('Problem inserting points, exiting...')
+                            exit(1)
+
+                        print("Wrote %d, response: %s" % (len(datapoints), response))
+
+
+                        datapoints = []            
+
     else:
         # this it the time column, convert the timestamps from 12/24/2016 14:57:13.810 to 2018-03-28T8:01:00Z"
         print ("Asuming %s is the time column" % (column))
@@ -225,9 +255,11 @@ for column in columns:
                 ]
         else:
             columns[column] = [
-                (datetime.datetime.strptime(timestamp,"%m/%d/%Y %H:%M:%S.%f") + timedelta(minutes=correction)).timestamp()
+                ((datetime.datetime.strptime(timestamp,"%m/%d/%Y %H:%M:%S.%f") + timedelta(minutes=correction)).timestamp()) * 1000 * 1000 * 1000
                 for timestamp in columns[column]
                 ]
+
+        
 
 
         #print ("after")
@@ -237,14 +269,27 @@ for column in columns:
 
 
  # write rest
-if len(datapoints) > 0:        
-    print('Inserting last %d datapoints...'%(len(datapoints)))
-    response = client.write_points(datapoints)
+if args.json:
+    if len(datapoints) > 0:        
+        print('Inserting last %d datapoints...'%(len(datapoints)))
+        response = client.write_points(datapoints)
 
-    if response == False:
-        print('Problem inserting points, exiting...')
-        exit(1)
+        if response == False:
+            print('Problem inserting points, exiting...')
+            exit(1)
 
-    print("Wrote %d, response: %s" % (len(datapoints), response))           
+        print("Wrote %d, response: %s" % (len(datapoints), response))           
+else:
+    if len(datapoints) > 0:
+                        print('Inserting last %d datapoints...'%(len(datapoints)))
+                        response = client.write_points(datapoints,  protocol ="line")
 
+                        if response == False:
+                            print('Problem inserting points, exiting...')
+                            exit(1)
+
+                        print("Wrote %d, response: %s" % (len(datapoints), response))
+
+
+                        datapoints = []  
 print("end")
